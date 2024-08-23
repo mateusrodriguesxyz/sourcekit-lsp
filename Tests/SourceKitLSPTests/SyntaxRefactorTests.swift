@@ -105,6 +105,97 @@ final class SyntaxRefactorTests: XCTestCase {
       ]
     )
   }
+  
+  func testConvertJSONToCodableStructClosureBeforeCode() throws {
+    try assertRefactor(
+      """
+      4️⃣{1️⃣
+         2️⃣"name": "Produce",
+         "shelves": [
+             {
+                 "name": "Discount Produce",
+                 "product": {
+                     "name": "Banana",
+                     "points": 200,
+                     "description": "A banana that's perfectly ripe."
+                 }
+             }
+         ]
+      }
+      struct Store { }
+      """,
+      context: (),
+      provider: ConvertJSONToCodableStruct.self,
+      expected: [
+        SourceEdit(
+          range: AbsolutePosition(utf8Offset: 0)..<AbsolutePosition(utf8Offset: 267),
+          replacement: """
+            struct JSONValue: Codable {
+              var name: String
+              var shelves: [Shelves]
+
+              struct Shelves: Codable {
+                var name: String
+                var product: Product
+
+                struct Product: Codable {
+                  var description: String
+                  var name: String
+                  var points: Double
+                }
+              }
+            }
+            """
+        )
+      ]
+    )
+  }
+  
+  func testConvertJSONToCodableStructComment() throws {
+    try assertRefactor(
+      """
+      //{
+      //   "name": "Produce",
+      //   "shelves": [
+      //       {
+      //           "name": "Discount Produce",
+      //           "product": {
+      //               "name": "Banana",
+      //               "points": 200,
+      //               "description": "A banana that's perfectly ripe."
+      //           }
+      //       }
+      //   ]
+      //}
+      """,
+      context: (),
+      provider: ConvertJSONToCodableStruct.self,
+      expected: [
+        SourceEdit(
+          range: AbsolutePosition(utf8Offset: 293)..<AbsolutePosition(utf8Offset: 293),
+          replacement: """
+            struct JSONValue: Codable {
+              var name: String
+              var shelves: [Shelves]
+
+              struct Shelves: Codable {
+                var name: String
+                var product: Product
+
+                struct Product: Codable {
+                  var description: String
+                  var name: String
+                  var points: Double
+                }
+              }
+            }
+            
+            
+            """
+        )
+      ]
+    )
+  }
 
   func testConvertJSONToCodableStructLiteral() throws {
     try assertRefactor(
