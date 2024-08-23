@@ -57,6 +57,34 @@ import SwiftSyntax
 /// }
 /// ```
 package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
+  package static func _extractJSON(from tokens: [TokenSyntax]) -> [TokenSyntax]? {
+    var stack: [TokenSyntax] = []
+    var jsonStartIndex: Int?
+    var jsonEndIndex: Int?
+
+    for (index, char) in tokens.enumerated() {
+        let currentIndex = tokens.index(tokens.startIndex, offsetBy: index)
+        
+      if char.text == "{" {
+            if stack.isEmpty {
+                jsonStartIndex = currentIndex
+            }
+            stack.append(char)
+      } else if char.text == "}" {
+            _ = stack.popLast()
+            if stack.isEmpty {
+                jsonEndIndex = currentIndex
+                break
+            }
+        }
+    }
+
+    if let start = jsonStartIndex, let end = jsonEndIndex {
+      return .init(tokens[start...end])
+    }
+    
+    return nil
+}
   package static func textRefactor(
     syntax: Syntax,
     in context: Void
@@ -68,7 +96,10 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
     }
 
     // Dig out the text that we think might be JSON.
-    let text: String
+    var text: String
+    
+    var endPosition: AbsolutePosition?
+    
     switch preflight {
     case let .closure(closure):
       /// The outer structure of the JSON { ... } looks like a closure in the
@@ -78,10 +109,27 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
       text = closure.trimmedDescription
     case let .endingClosure(closure, unexpected):
       text = closure.trimmedDescription + unexpected.description
+      let tokens = closure.tokens(viewMode: .sourceAccurate).map({ $0 }) + unexpected.tokens(viewMode: .sourceAccurate).map({ $0 })
+        
+      if let json = _extractJSON(from: tokens) {
+        endPosition = json.last?.endPosition
+        
+        text = json.reduce("", { $0 + $1.text })
+      }
 
     case .stringLiteral(_, let literalText):
       /// A string literal that could contain JSON within it.
       text = literalText
+    case .comment(let trivias, _):
+      /// A comment that could contain JSON within it.
+        let lines = trivias.compactMap {
+          if case let .lineComment(line) = $0 {
+            return line.trimmingPrefix("//")
+          } else {
+            return nil
+          }
+        }
+      text = lines.joined(separator: "\n")
     }
 
     // Try to process this as JSON.
@@ -115,7 +163,7 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
       // start with.
       return [
         SourceEdit(
-          range: closure.positionAfterSkippingLeadingTrivia..<unexpected.endPosition,
+          range: closure.positionAfterSkippingLeadingTrivia..<(endPosition ?? unexpected.endPosition),
           replacement: decls.description
         )
       ]
@@ -128,6 +176,18 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
           replacement: "\n" + decls.description
         )
       ]
+      case .comment(_, let node):
+        if node == syntax {
+          return [
+            SourceEdit(
+              range: syntax.positionAfterSkippingLeadingTrivia..<syntax.positionAfterSkippingLeadingTrivia,
+              replacement: decls.description + "\n\n"
+            )
+          ]
+        } else {
+          return []
+        }
+        
     }
   }
 
@@ -144,6 +204,9 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
 
     /// A string literal that may contain JSON.
     case stringLiteral(StringLiteralExprSyntax, String)
+    
+    /// A comment that may contain JSON.
+    case comment([TriviaPiece], Syntax)
   }
 
   /// Look for either a closure or a string literal that might have JSON in it.
@@ -179,6 +242,19 @@ package struct ConvertJSONToCodableStruct: EditRefactoringProvider {
 
       return .stringLiteral(stringLiteral, text)
     }
+    
+    if syntax.leadingTrivia.contains(where: \.isComment) {
+      let lines = syntax.leadingTrivia.filter(\.isComment)
+//      let lines = syntax.leadingTrivia.compactMap {
+//        if case let .lineComment(line) = $0 {
+//          return line.trimmingPrefix("//")
+//        } else {
+//          return nil
+//        }
+//      }
+//      let text = lines.joined(separator: "\n")
+      return .comment(lines, syntax)
+    }
 
     // Look further up the syntax tree.
     if let parent = syntax.parent {
@@ -193,8 +269,14 @@ extension ConvertJSONToCodableStruct: SyntaxRefactoringCodeActionProvider {
   static func nodeToRefactor(in scope: SyntaxCodeActionScope) -> Syntax? {
     var node: Syntax? = scope.innermostNodeContainingRange
     while let unwrappedNode = node, ![.codeBlockItem, .memberBlockItem].contains(unwrappedNode.kind) {
-      if preflightRefactoring(unwrappedNode) != nil {
-        return unwrappedNode
+      if let preflight = preflightRefactoring(unwrappedNode) {
+        if case .comment(_, let syntax) = preflight {
+          if scope.snapshot.lineTable[scope.request.range.upperBound.line].contains("//") {
+            return unwrappedNode
+          }
+        } else {
+          return unwrappedNode
+        }
       }
       node = unwrappedNode.parent
     }

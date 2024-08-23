@@ -169,7 +169,7 @@ struct PackageManifestEdits: SyntaxCodeActionProvider {
   ]
 }
 
-fileprivate extension PackageEditResult {
+extension PackageEditResult {
   /// Translate package manifest edits into a workspace edit. This can
   /// involve both modifications to the manifest file as well as the creation
   /// of new files.
